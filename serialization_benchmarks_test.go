@@ -26,6 +26,7 @@ import (
 	"github.com/ikkerens/ikeapack"
 	"github.com/json-iterator/go"
 	shamaton "github.com/shamaton/msgpack"
+	"github.com/tendermint/go-amino"
 	"github.com/tinylib/msgp/msgp"
 	"github.com/ugorji/go/codec"
 	"gopkg.in/mgo.v2/bson"
@@ -1262,7 +1263,6 @@ func BenchmarkIkeaUnmarshal(b *testing.B) {
 	}
 }
 
-
 // github.com/shamaton/msgpack - as map
 
 type ShamatonMapMsgpackSerializer struct{}
@@ -1311,4 +1311,89 @@ func BenchmarkShamatonArrayMsgpackMarshal(b *testing.B) {
 
 func BenchmarkShamatonArrayMsgpackUnmarshal(b *testing.B) {
 	benchUnmarshal(b, ShamatonArrayMsgpackSerializer{})
+}
+
+// github.com/tendermint/go-amino
+
+type AminoA struct {
+	Name     string
+	BirthDay time.Time
+	Phone    string
+	Siblings int
+	Spouse   bool
+	Money    float64 `amino:"unsafe"`
+}
+
+type AminoSerializer struct {
+	*amino.Codec
+}
+
+func (cdc AminoSerializer) Marshal(o interface{}) []byte {
+	return cdc.MustMarshalBinaryBare(o)
+}
+
+func (cdc AminoSerializer) Unmarshal(d []byte, o interface{}) error {
+	return cdc.UnmarshalBinaryBare(d, o)
+}
+
+func (cdc AminoSerializer) String() string {
+	return "tendermint/go-amino"
+}
+
+func generateAmino() []*AminoA {
+	a := make([]*AminoA, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		a = append(a, &AminoA{
+			Name:     randString(16),
+			BirthDay: time.Now(),
+			Phone:    randString(10),
+			Siblings: rand.Intn(5),
+			Spouse:   rand.Intn(2) == 1,
+			Money:    rand.Float64(),
+		})
+	}
+	return a
+}
+
+func BenchmarkAminoMarshal(b *testing.B) {
+	data := generateAmino()
+	b.ReportAllocs()
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		AminoSerializer{amino.NewCodec()}.MustMarshalBinaryBare(data[rand.Intn(len(data))])
+	}
+}
+
+func BenchmarkAminoUnmarshal(b *testing.B) {
+	benchUnmarshalAmino(b, AminoSerializer{amino.NewCodec()})
+}
+
+func benchUnmarshalAmino(b *testing.B, cdc AminoSerializer) {
+	b.StopTimer()
+	data := generateAmino()
+	ser := make([][]byte, len(data))
+	for i, d := range data {
+		o := cdc.MustMarshalBinaryBare(d)
+		t := make([]byte, len(o))
+		copy(t, o)
+		ser[i] = t
+	}
+	b.ReportAllocs()
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		n := rand.Intn(len(ser))
+		o := &AminoA{}
+		err := cdc.UnmarshalBinaryBare(ser[n], o)
+		if err != nil {
+			b.Fatalf("failed to unmarshal: %s (%s)", err, ser[n])
+		}
+		// Validate unmarshalled data.
+		if validate != "" {
+			i := data[n]
+			correct := o.Name == i.Name && o.Phone == i.Phone && o.Siblings == i.Siblings && o.Spouse == i.Spouse && o.Money == i.Money && o.BirthDay.Equal(i.BirthDay) //&& cmpTags(o.Tags, i.Tags) && cmpAliases(o.Aliases, i.Aliases)
+			if !correct {
+				b.Fatalf("unmarshaled object differed:\n%v\n%v", i, o)
+			}
+		}
+	}
 }
